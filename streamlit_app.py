@@ -44,7 +44,6 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
 def evaluate_with_gemini(gemini_key, match_data, probs):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
@@ -62,8 +61,21 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     3. Final quantitative verdict.
     Do NOT invent any statistics.
     """
-    response = model.generate_content(prompt)
-    return response.text
+    
+    # Iterate through potential model identifiers supported by the API
+    model_candidates = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest", "gemini-1.5-flash"]
+    last_exception = None
+
+    for m_name in model_candidates:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            last_exception = e
+            continue
+
+    raise last_exception
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
