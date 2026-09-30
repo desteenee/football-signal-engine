@@ -5,7 +5,7 @@ import numpy as np
 from scipy.stats import poisson
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import google.generativeai as genai
+from google import genai
 
 BASE = "https://v3.football.api-sports.io"
 WINDOW_HOURS = 12
@@ -43,7 +43,7 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
 
 def evaluate_with_gemini(gemini_key, match_data, probs):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
-    genai.configure(api_key=gemini_key)
+    client = genai.Client(api_key=gemini_key)
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
@@ -62,28 +62,11 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
-    # Preferred models to test in order
-    target_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-1.5-pro"]
-    
-    for m in target_models:
-        try:
-            model = genai.GenerativeModel(m)
-            res = model.generate_content(prompt)
-            return res.text
-        except Exception:
-            continue
-
-    # Fallback: Query available text models for the configured API key
-    available_models = [
-        m.name for m in genai.list_models() 
-        if "generateContent" in m.supported_generation_methods
-    ]
-    if available_models:
-        model = genai.GenerativeModel(available_models[0])
-        res = model.generate_content(prompt)
-        return res.text
-
-    raise RuntimeError("No available Gemini model found for this API Key.")
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    return response.text
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
