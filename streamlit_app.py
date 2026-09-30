@@ -113,6 +113,9 @@ with col_gem:
 with col_tz:
     tz_name = st.text_input("Time Zone", value="Africa/Lagos")
 
+# Dynamic Time Window Slider
+hours_ahead = st.slider("Lookahead Window (Hours from now):", min_value=1, max_value=24, value=12, step=1)
+
 if fd_key and gemini_key:
     try:
         user_tz = ZoneInfo(tz_name)
@@ -121,22 +124,21 @@ if fd_key and gemini_key:
 
     now_utc = datetime.now(timezone.utc)
     date_from = now_utc.strftime("%Y-%m-%d")
-    date_to = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
+    date_to = (now_utc + timedelta(days=2)).strftime("%Y-%m-%d")
 
     try:
         all_matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
-        # Strict 3-Hour Time Window Filter
-        three_hours_later = now_utc + timedelta(hours=3)
+        # Filter matches within selected hours
+        cutoff_time = now_utc + timedelta(hours=hours_ahead)
         match_options = {}
 
         for m in all_matches:
             utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
             
-            # Check if match starts between now and 3 hours from now
-            if now_utc <= utc_date <= three_hours_later:
+            if now_utc <= utc_date <= cutoff_time:
                 local_date = utc_date.astimezone(user_tz)
-                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%H:%M %Z')})"
+                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%b %d, %H:%M %Z')})"
                 
                 match_options[label] = {
                     "league": m["competition"]["name"],
@@ -146,9 +148,9 @@ if fd_key and gemini_key:
                 }
 
         if not match_options:
-            st.warning("No scheduled matches kicking off within the next 3 hours.")
+            st.warning(f"No scheduled matches kicking off within the next {hours_ahead} hours. Try adjusting the slider above.")
         else:
-            selected_label = st.selectbox("Select Immediate Match (Next 3 Hours):", list(match_options.keys()))
+            selected_label = st.selectbox("Select Match to Analyze:", list(match_options.keys()))
             
             if st.button("Analyze Selected Match", type="primary"):
                 selected_match = match_options[selected_label]
