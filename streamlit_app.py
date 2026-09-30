@@ -3,7 +3,7 @@ import requests
 import time
 import numpy as np
 from scipy.stats import poisson
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import google.generativeai as genai
 
@@ -76,12 +76,10 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
-    # Priority active models followed by dynamic detection
     models_to_try = [
-        "models/gemini-3.8-flash",
-        "gemini-3.8-flash",
         "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        "gemini-1.5-pro",
+        "gemini-2.0-flash"
     ]
     
     for m in models_to_try:
@@ -121,21 +119,24 @@ if fd_key and gemini_key:
     except Exception:
         user_tz = ZoneInfo("UTC")
 
-    now = datetime.now(user_tz)
-    date_from = now.strftime("%Y-%m-%d")
-    date_to = (now + timedelta(days=3)).strftime("%Y-%m-%d")
+    now_utc = datetime.now(timezone.utc)
+    date_from = now_utc.strftime("%Y-%m-%d")
+    date_to = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
 
     try:
-        matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
+        all_matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
-        if not matches:
-            st.warning("No scheduled matches found for the upcoming 3 days.")
-        else:
-            match_options = {}
-            for m in matches:
-                utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+        # Strict 3-Hour Time Window Filter
+        three_hours_later = now_utc + timedelta(hours=3)
+        match_options = {}
+
+        for m in all_matches:
+            utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+            
+            # Check if match starts between now and 3 hours from now
+            if now_utc <= utc_date <= three_hours_later:
                 local_date = utc_date.astimezone(user_tz)
-                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%b %d, %H:%M')})"
+                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%H:%M %Z')})"
                 
                 match_options[label] = {
                     "league": m["competition"]["name"],
@@ -144,7 +145,10 @@ if fd_key and gemini_key:
                     "time": local_date.strftime("%Y-%m-%d %H:%M %Z")
                 }
 
-            selected_label = st.selectbox("Select a Match to Analyze:", list(match_options.keys()))
+        if not match_options:
+            st.warning("No scheduled matches kicking off within the next 3 hours.")
+        else:
+            selected_label = st.selectbox("Select Immediate Match (Next 3 Hours):", list(match_options.keys()))
             
             if st.button("Analyze Selected Match", type="primary"):
                 selected_match = match_options[selected_label]
