@@ -77,11 +77,9 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     """
     
     models_to_try = [
-        "gemini-2.5-flash",
         "gemini-1.5-flash",
-        "gemini-2.0-flash",
-        "models/gemini-2.5-flash",
-        "models/gemini-1.5-flash"
+        "gemini-1.5-pro",
+        "gemini-2.0-flash"
     ]
     
     for m in models_to_try:
@@ -125,14 +123,12 @@ if fd_key and gemini_key:
     date_from = now.strftime("%Y-%m-%d")
     date_to = (now + timedelta(days=3)).strftime("%Y-%m-%d")
 
-    # Fetch match list
     try:
         matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
         if not matches:
             st.warning("No scheduled matches found for the upcoming 3 days.")
         else:
-            # Build match lookup dictionary
             match_options = {}
             for m in matches:
                 utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
@@ -146,7 +142,6 @@ if fd_key and gemini_key:
                     "time": local_date.strftime("%Y-%m-%d %H:%M %Z")
                 }
 
-            # Dropdown selector
             selected_label = st.selectbox("Select a Match to Analyze:", list(match_options.keys()))
             
             if st.button("Analyze Selected Match", type="primary"):
@@ -155,7 +150,6 @@ if fd_key and gemini_key:
                 st.subheader(f"⚽ {selected_match['home']} vs {selected_match['away']}")
                 st.caption(f"{selected_match['league']} | {selected_match['time']}")
                 
-                # Calculate Poisson model
                 probs = calculate_poisson_probs(1.60, 1.15)
                 
                 cols = st.columns(len(probs))
@@ -164,7 +158,6 @@ if fd_key and gemini_key:
                     
                 st.divider()
                 
-                # Single Gemini AI Call
                 with st.spinner("Generating AI Analysis..."):
                     ai_eval = evaluate_with_gemini(gemini_key, selected_match, probs)
                     st.markdown("### 🤖 Gemini AI Signal Evaluation")
