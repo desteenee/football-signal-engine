@@ -44,7 +44,7 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
 def evaluate_with_gemini(gemini_key, match_data, probs):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
