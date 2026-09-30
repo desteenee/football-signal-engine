@@ -41,15 +41,18 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
         "Under 2.5 Goals": p_u25,
     }
 
-def evaluate_with_gemini(gemini_key, match_data, probs):
+def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
     client = genai.Client(api_key=gemini_key)
+    
+    watchlist_note = "NOTE: This match is outside the primary 12-hour active window and is currently on the WATCHLIST." if is_watchlist else ""
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
     Match: {match_data['home']} vs {match_data['away']}
     League: {match_data['league']}
     Match Time: {match_data['time']}
+    {watchlist_note}
     
     Model Calculated Outcome Probabilities (Poisson):
     {probs}
@@ -58,7 +61,7 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Provide a concise evaluation (3 key bullet points max) explaining:
     1. The strongest statistical signal based on expected goals.
     2. Tactical context or market risk to consider.
-    3. Final quantitative verdict.
+    3. Final quantitative verdict and recommendation (e.g., monitor on watchlist vs. immediate action).
     Do NOT invent any statistics.
     """
     
@@ -92,7 +95,7 @@ if go:
     now = datetime.now(user_tz)
     date_str = now.strftime("%Y-%m-%d")
 
-    st.info(f"Fetching upcoming fixtures for {date_str}...")
+    st.info(f"Fetching fixtures for today ({date_str})...")
 
     fixtures = []
     try:
@@ -103,39 +106,27 @@ if go:
         st.error(f"Error fetching data from API-Football: {e}")
 
     upcoming_matches = []
+    watchlist_matches = []
+
     for f in fixtures:
         f_date = datetime.fromisoformat(f["fixture"]["date"]).astimezone(user_tz)
-        if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
-            upcoming_matches.append({
-                "id": f["fixture"]["id"],
-                "league": f["league"]["name"],
-                "home": f["teams"]["home"]["name"],
-                "away": f["teams"]["away"]["name"],
-                "time": f_date.strftime("%H:%M %Z")
-            })
-
-    if not upcoming_matches:
-        st.warning("No live match fixtures returned for this window. Generating sample statistical analysis:")
-        sample_matches = [
-            {"home": "Arsenal", "away": "Chelsea", "league": "Premier League", "time": "17:30 WAT", "home_xg": 1.85, "away_xg": 1.10},
-            {"home": "Real Madrid", "away": "Barcelona", "league": "La Liga", "time": "20:00 WAT", "home_xg": 1.95, "away_xg": 1.65}
-        ]
+        match_info = {
+            "id": f["fixture"]["id"],
+            "league": f["league"]["name"],
+            "home": f["teams"]["home"]["name"],
+            "away": f["teams"]["away"]["name"],
+            "time": f_date.strftime("%H:%M %Z"),
+            "date_obj": f_date
+        }
         
-        for match in sample_matches:
-            st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
-            probs = calculate_poisson_probs(home_xg=match["home_xg"], away_xg=match["away_xg"])
-            
-            cols = st.columns(len(probs))
-            for col, (k, v) in zip(cols, probs.items()):
-                col.metric(k, f"{v*100:.1f}%")
-                
-            with st.spinner("Generating Gemini AI Analysis..."):
-                ai_eval = evaluate_with_gemini(gemini_key, match, probs)
-                st.markdown("### 🤖 Gemini AI Signal Evaluation")
-                st.markdown(ai_eval)
-                st.divider()
-    else:
-        st.success(f"Found {len(upcoming_matches)} live match(es) starting in the next {WINDOW_HOURS} hours.")
+        # Check if match is in active 12-hour window
+        if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
+            upcoming_matches.append(match_info)
+        elif f_date > now + timedelta(hours=WINDOW_HOURS):
+            watchlist_matches.append(match_info)
+
+    if upcoming_matches:
+        st.success(f"Found {len(upcoming_matches)} live/upcoming match(es) in the next {WINDOW_HOURS} hours.")
         for match in upcoming_matches:
             st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
             
@@ -147,7 +138,31 @@ if go:
                 col.metric(k, f"{v*100:.1f}%")
                 
             with st.spinner("Generating Gemini AI Analysis..."):
-                ai_eval = evaluate_with_gemini(gemini_key, match, probs)
+                ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=False)
                 st.markdown("### 🤖 Gemini AI Signal Evaluation")
                 st.markdown(ai_eval)
                 st.divider()
+
+    else:
+        st.warning(f"No matches starting within the immediate {WINDOW_HOURS}-hour window.")
+        
+        if watchlist_matches:
+            st.info("📋 **Watchlist Matches (Later Today)**: Displaying scheduled fixtures outside the threshold window for pre-match analysis.")
+            for match in watchlist_matches:
+                st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
+                
+                # Estimated default xG for model testing
+                home_xg, away_xg = 1.50, 1.10
+                probs = calculate_poisson_probs(home_xg, away_xg)
+                
+                cols = st.columns(len(probs))
+                for col, (k, v) in zip(cols, probs.items()):
+                    col.metric(k, f"{v*100:.1f}%")
+                    
+                with st.spinner("Generating Gemini Watchlist Analysis..."):
+                    ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=True)
+                    st.markdown("### 🤖 Gemini AI Watchlist Evaluation")
+                    st.markdown(ai_eval)
+                    st.divider()
+        else:
+            st.error("No upcoming matches remaining on today's schedule.")
