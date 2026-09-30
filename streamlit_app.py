@@ -5,7 +5,7 @@ import numpy as np
 from scipy.stats import poisson
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from google import genai
+import google.generativeai as genai
 
 BASE = "https://v3.football.api-sports.io"
 WINDOW_HOURS = 12
@@ -43,7 +43,7 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
 
 def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
-    client = genai.Client(api_key=gemini_key)
+    genai.configure(api_key=gemini_key)
     
     watchlist_note = "NOTE: This match is outside the primary 12-hour active window and is currently on the WATCHLIST." if is_watchlist else ""
     
@@ -65,11 +65,24 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     Do NOT invent any statistics.
     """
     
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text
+    # Try models compatible with google.generativeai SDK
+    models_to_try = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-1.5-pro"]
+    for m in models_to_try:
+        try:
+            model = genai.GenerativeModel(m)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception:
+            continue
+            
+    # Fallback to dynamic model lookup
+    for m in genai.list_models():
+        if "generateContent" in m.supported_generation_methods:
+            model = genai.GenerativeModel(m.name)
+            response = model.generate_content(prompt)
+            return response.text
+
+    raise RuntimeError("Could not find an accessible Gemini model.")
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
