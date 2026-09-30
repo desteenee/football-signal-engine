@@ -22,17 +22,14 @@ def fetch_fd_fixtures_throttled(api_key, date_from, date_to):
     
     response = requests.get(url, headers=headers, timeout=15)
     
-    # Check headers for remaining requests allowance
     requests_remaining = response.headers.get("X-Requests-Available-Minute")
     seconds_to_reset = response.headers.get("X-RequestCounter-Reset")
     
-    # Handle rate-limit threshold pre-emptively
     if requests_remaining is not None and int(requests_remaining) <= 1:
         wait_time = int(seconds_to_reset) if seconds_to_reset else 60
         st.warning(f"Rate limit threshold reached. Pausing for {wait_time} seconds to protect account status...")
         time.sleep(wait_time)
         
-    # Handle explicit 429 rate limit response if hit
     if response.status_code == 429:
         retry_after = int(response.headers.get("Retry-After", 60))
         st.error(f"Rate limited (HTTP 429). Waiting {retry_after} seconds before retry...")
@@ -83,7 +80,15 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
-    models_to_try = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-1.5-pro"]
+    # Priority model targets
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "models/gemini-2.5-flash",
+        "models/gemini-1.5-flash"
+    ]
+    
     for m in models_to_try:
         try:
             model = genai.GenerativeModel(m)
@@ -92,13 +97,17 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
         except Exception:
             continue
             
-    for m in genai.list_models():
-        if "generateContent" in m.supported_generation_methods:
-            model = genai.GenerativeModel(m.name)
-            response = model.generate_content(prompt)
-            return response.text
+    # Fallback to dynamically querying supported content generation models
+    try:
+        for m in genai.list_models():
+            if "generateContent" in m.supported_generation_methods:
+                model = genai.GenerativeModel(m.name)
+                response = model.generate_content(prompt)
+                return response.text
+    except Exception as e:
+        raise RuntimeError(f"Gemini API Error: {e}")
 
-    raise RuntimeError("Could not find an accessible Gemini model.")
+    raise RuntimeError("Could not establish connection with an active Gemini model.")
 
 # ---------- Interface ----------
 st.title("⚽ Football Signal Engine")
