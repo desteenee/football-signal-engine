@@ -76,10 +76,12 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
+    # Priority active models followed by dynamic detection
     models_to_try = [
+        "models/gemini-3.8-flash",
+        "gemini-3.8-flash",
         "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash"
+        "gemini-1.5-pro"
     ]
     
     for m in models_to_try:
