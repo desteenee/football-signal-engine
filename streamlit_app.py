@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import google.generativeai as genai
 
 BASE = "https://v3.football.api-sports.io"
-WINDOW_HOURS = 3
+WINDOW_HOURS = 12
 
 st.set_page_config(page_title="Football Signal Engine", page_icon="⚽", layout="wide")
 
@@ -37,34 +37,37 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
         "Home Win": p_home,
         "Draw": p_draw,
         "Away Win": p_away,
-        "1X": p_home + p_draw,
-        "X2": p_away + p_draw,
         "Over 2.5 Goals": p_o25,
         "Under 2.5 Goals": p_u25,
     }
 
-def evaluate_with_gemini(gemini_key, match_data, picks):
-    """Sends calculated statistics and top candidate options to Gemini for review."""
+def evaluate_with_gemini(gemini_key, match_data, probs):
+    """Sends calculated statistics and outcome probabilities to Gemini for review."""
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
     
     prompt = f"""
-    You are an expert sports quantitative analyst. Review the statistical picks for the following football match:
+    You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
     Match: {match_data['home']} vs {match_data['away']}
     League: {match_data['league']}
+    Match Time: {match_data['time']}
     
-    Calculated Poisson Probabilities & Market Odds:
-    {picks}
+    Model Calculated Outcome Probabilities (Poisson):
+    {probs}
     
     Task:
-    Provide a concise evaluation (3-4 bullet points maximum) explaining the strongest statistical signal, market edge, and any data risk (e.g. unconfirmed lineups, volatile odds). Do NOT invent any statistics.
+    Provide a concise evaluation (3 key bullet points max) explaining:
+    1. The strongest statistical signal based on expected goals.
+    2. Tactical context or market risk to consider.
+    3. Final quantitative verdict.
+    Do NOT invent any statistics.
     """
     response = model.generate_content(prompt)
     return response.text
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
-st.caption("Stage 2: Poisson Model, Odds Edge Scoring & Gemini Analysis Integration")
+st.caption("Live Match Fetching, Poisson Probability Modeling & Gemini AI Synthesis")
 
 col_api, col_gem, col_tz = st.columns([3, 3, 2])
 with col_api:
@@ -76,9 +79,72 @@ with col_tz:
 
 go = st.button("Refresh & Calculate Signals", type="primary", disabled=not (api_key and gemini_key))
 
-if not (api_key and gemini_key):
-    st.info("Enter both your API-Football Key and Gemini API Key to proceed.")
-    st.stop()
-
 if go:
-    st.success("Keys accepted! Processing match data and generating Poisson matrices...")
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except Exception:
+        st.error(f"Invalid timezone string '{tz_name}'. Defaulting to UTC.")
+        user_tz = ZoneInfo("UTC")
+
+    now = datetime.now(user_tz)
+    date_str = now.strftime("%Y-%m-%d")
+
+    st.info(f"Fetching upcoming fixtures for {date_str}...")
+
+    try:
+        res, remaining = api_get(api_key, "/fixtures", {"date": date_str})
+        st.sidebar.metric("API Requests Remaining Today", remaining)
+        fixtures = res.get("response", [])
+    except Exception as e:
+        st.error(f"Error fetching data from API-Football: {e}")
+        st.stop()
+
+    if not fixtures:
+        st.warning(f"No fixtures found for today ({date_str}). Try again closer to match times!")
+        st.stop()
+
+    upcoming_matches = []
+    for f in fixtures:
+        f_date = datetime.fromisoformat(f["fixture"]["date"]).astimezone(user_tz)
+        if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
+            upcoming_matches.append({
+                "id": f["fixture"]["id"],
+                "league": f["league"]["name"],
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "time": f_date.strftime("%H:%M %Z")
+            })
+
+    st.success(f"Found {len(upcoming_matches)} match(es) starting in the next {WINDOW_HOURS} hours.")
+
+    if not upcoming_matches:
+        st.info("No games scheduled within the next window. Here are sample calculations:")
+        sample_match = {"home": "Arsenal", "away": "Chelsea", "league": "Premier League", "time": "17:30 WAT"}
+        probs = calculate_poisson_probs(home_xg=1.85, away_xg=1.10)
+        
+        st.subheader(f"{sample_match['home']} vs {sample_match['away']} ({sample_match['league']})")
+        cols = st.columns(len(probs))
+        for col, (k, v) in zip(cols, probs.items()):
+            col.metric(k, f"{v*100:.1f}%")
+            
+        with st.spinner("Generating Gemini AI Analysis..."):
+            ai_eval = evaluate_with_gemini(gemini_key, sample_match, probs)
+            st.markdown("### 🤖 Gemini AI Signal Evaluation")
+            st.markdown(ai_eval)
+    else:
+        for match in upcoming_matches:
+            st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
+            
+            # Default baseline expected goals (xG) model parameters
+            home_xg, away_xg = 1.65, 1.20
+            probs = calculate_poisson_probs(home_xg, away_xg)
+            
+            cols = st.columns(len(probs))
+            for col, (k, v) in zip(cols, probs.items()):
+                col.metric(k, f"{v*100:.1f}%")
+                
+            with st.spinner("Generating Gemini AI Analysis..."):
+                ai_eval = evaluate_with_gemini(gemini_key, match, probs)
+                st.markdown("### 🤖 Gemini AI Signal Evaluation")
+                st.markdown(ai_eval)
+                st.divider()
