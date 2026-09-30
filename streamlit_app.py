@@ -64,6 +64,7 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Match: {match_data['home']} vs {match_data['away']}
     League: {match_data['league']}
     Match Time: {match_data['time']}
+    Status: {match_data['status']}
     
     Model Calculated Outcome Probabilities (Poisson):
     {probs}
@@ -113,8 +114,11 @@ with col_gem:
 with col_tz:
     tz_name = st.text_input("Time Zone", value="Africa/Lagos")
 
-# Dynamic Time Window Slider
-hours_ahead = st.slider("Lookahead Window (Hours from now):", min_value=1, max_value=24, value=12, step=1)
+col_mode, col_slide = st.columns([2, 4])
+with col_mode:
+    include_in_play = st.checkbox("Include Live / In-Play Matches", value=True)
+with col_slide:
+    hours_ahead = st.slider("Lookahead Window (Hours from now):", min_value=1, max_value=24, value=12, step=1)
 
 if fd_key and gemini_key:
     try:
@@ -123,32 +127,38 @@ if fd_key and gemini_key:
         user_tz = ZoneInfo("UTC")
 
     now_utc = datetime.now(timezone.utc)
-    date_from = now_utc.strftime("%Y-%m-%d")
+    date_from = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
     date_to = (now_utc + timedelta(days=2)).strftime("%Y-%m-%d")
 
     try:
         all_matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
-        # Filter matches within selected hours
         cutoff_time = now_utc + timedelta(hours=hours_ahead)
         match_options = {}
 
         for m in all_matches:
             utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+            status = m.get("status", "")
             
-            if now_utc <= utc_date <= cutoff_time:
+            # Show live matches OR matches kicking off within the specified lookahead window
+            is_live = include_in_play and status in ["IN_PLAY", "PAUSED", "HALFTIME"]
+            is_upcoming = (now_utc - timedelta(hours=3)) <= utc_date <= cutoff_time and status not in ["FINISHED", "AWARDED"]
+
+            if is_live or is_upcoming:
                 local_date = utc_date.astimezone(user_tz)
-                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%b %d, %H:%M %Z')})"
+                status_tag = f"🔴 {status}" if is_live else local_date.strftime("%b %d, %H:%M %Z")
+                label = f"[{status_tag}] {m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']})"
                 
                 match_options[label] = {
                     "league": m["competition"]["name"],
                     "home": m["homeTeam"]["name"],
                     "away": m["awayTeam"]["name"],
-                    "time": local_date.strftime("%Y-%m-%d %H:%M %Z")
+                    "time": local_date.strftime("%Y-%m-%d %H:%M %Z"),
+                    "status": status
                 }
 
         if not match_options:
-            st.warning(f"No scheduled matches kicking off within the next {hours_ahead} hours. Try adjusting the slider above.")
+            st.warning(f"No covered matches found in the API response. Football-Data free tier only includes top 12 leagues. If matches are happening in lower/regional leagues right now, they won't appear.")
         else:
             selected_label = st.selectbox("Select Match to Analyze:", list(match_options.keys()))
             
@@ -156,7 +166,7 @@ if fd_key and gemini_key:
                 selected_match = match_options[selected_label]
                 
                 st.subheader(f"⚽ {selected_match['home']} vs {selected_match['away']}")
-                st.caption(f"{selected_match['league']} | {selected_match['time']}")
+                st.caption(f"{selected_match['league']} | {selected_match['time']} | Status: {selected_match['status']}")
                 
                 probs = calculate_poisson_probs(1.60, 1.15)
                 
