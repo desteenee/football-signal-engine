@@ -91,17 +91,13 @@ if go:
 
     st.info(f"Fetching upcoming fixtures for {date_str}...")
 
+    fixtures = []
     try:
         res, remaining = api_get(api_key, "/fixtures", {"date": date_str})
         st.sidebar.metric("API Requests Remaining Today", remaining)
         fixtures = res.get("response", [])
     except Exception as e:
         st.error(f"Error fetching data from API-Football: {e}")
-        st.stop()
-
-    if not fixtures:
-        st.warning(f"No fixtures found for today ({date_str}). Try again closer to match times!")
-        st.stop()
 
     upcoming_matches = []
     for f in fixtures:
@@ -115,27 +111,31 @@ if go:
                 "time": f_date.strftime("%H:%M %Z")
             })
 
-    st.success(f"Found {len(upcoming_matches)} match(es) starting in the next {WINDOW_HOURS} hours.")
-
     if not upcoming_matches:
-        st.info("No games scheduled within the next window. Here are sample calculations:")
-        sample_match = {"home": "Arsenal", "away": "Chelsea", "league": "Premier League", "time": "17:30 WAT"}
-        probs = calculate_poisson_probs(home_xg=1.85, away_xg=1.10)
+        st.warning("No live match fixtures returned for this window. Generating sample statistical analysis:")
+        sample_matches = [
+            {"home": "Arsenal", "away": "Chelsea", "league": "Premier League", "time": "17:30 WAT", "home_xg": 1.85, "away_xg": 1.10},
+            {"home": "Real Madrid", "away": "Barcelona", "league": "La Liga", "time": "20:00 WAT", "home_xg": 1.95, "away_xg": 1.65}
+        ]
         
-        st.subheader(f"{sample_match['home']} vs {sample_match['away']} ({sample_match['league']})")
-        cols = st.columns(len(probs))
-        for col, (k, v) in zip(cols, probs.items()):
-            col.metric(k, f"{v*100:.1f}%")
+        for match in sample_matches:
+            st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
+            probs = calculate_poisson_probs(home_xg=match["home_xg"], away_xg=match["away_xg"])
             
-        with st.spinner("Generating Gemini AI Analysis..."):
-            ai_eval = evaluate_with_gemini(gemini_key, sample_match, probs)
-            st.markdown("### 🤖 Gemini AI Signal Evaluation")
-            st.markdown(ai_eval)
+            cols = st.columns(len(probs))
+            for col, (k, v) in zip(cols, probs.items()):
+                col.metric(k, f"{v*100:.1f}%")
+                
+            with st.spinner("Generating Gemini AI Analysis..."):
+                ai_eval = evaluate_with_gemini(gemini_key, match, probs)
+                st.markdown("### 🤖 Gemini AI Signal Evaluation")
+                st.markdown(ai_eval)
+                st.divider()
     else:
+        st.success(f"Found {len(upcoming_matches)} live match(es) starting in the next {WINDOW_HOURS} hours.")
         for match in upcoming_matches:
             st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
             
-            # Default baseline expected goals (xG) model parameters
             home_xg, away_xg = 1.65, 1.20
             probs = calculate_poisson_probs(home_xg, away_xg)
             
