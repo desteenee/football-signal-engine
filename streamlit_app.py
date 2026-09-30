@@ -13,10 +13,6 @@ st.set_page_config(page_title="Football Signal Engine", page_icon="⚽", layout=
 
 # ---------- Rate-Limited API Client ----------
 def fetch_fd_fixtures_throttled(api_key, date_from, date_to):
-    """
-    Fetches scheduled matches while monitoring API response headers 
-    to automatically prevent rate-limit bans (HTTP 429).
-    """
     headers = {"X-Auth-Token": api_key}
     url = f"{BASE_URL}/matches?dateFrom={date_from}&dateTo={date_to}"
     
@@ -27,12 +23,12 @@ def fetch_fd_fixtures_throttled(api_key, date_from, date_to):
     
     if requests_remaining is not None and int(requests_remaining) <= 1:
         wait_time = int(seconds_to_reset) if seconds_to_reset else 60
-        st.warning(f"Rate limit threshold reached. Pausing for {wait_time} seconds to protect account status...")
+        st.warning(f"Rate limit threshold reached. Pausing for {wait_time} seconds...")
         time.sleep(wait_time)
         
     if response.status_code == 429:
         retry_after = int(response.headers.get("Retry-After", 60))
-        st.error(f"Rate limited (HTTP 429). Waiting {retry_after} seconds before retry...")
+        st.error(f"Rate limited (HTTP 429). Waiting {retry_after} seconds...")
         time.sleep(retry_after)
         response = requests.get(url, headers=headers, timeout=15)
 
@@ -80,7 +76,6 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
-    # Priority model targets
     models_to_try = [
         "gemini-2.5-flash",
         "gemini-1.5-flash",
@@ -97,7 +92,6 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
         except Exception:
             continue
             
-    # Fallback to dynamically querying supported content generation models
     try:
         for m in genai.list_models():
             if "generateContent" in m.supported_generation_methods:
@@ -121,55 +115,64 @@ with col_gem:
 with col_tz:
     tz_name = st.text_input("Time Zone", value="Africa/Lagos")
 
-go = st.button("Refresh & Calculate Signals", type="primary", disabled=not (fd_key and gemini_key))
-
-if go:
+if fd_key and gemini_key:
     try:
         user_tz = ZoneInfo(tz_name)
     except Exception:
-        st.error(f"Invalid timezone string '{tz_name}'. Defaulting to UTC.")
         user_tz = ZoneInfo("UTC")
 
     now = datetime.now(user_tz)
     date_from = now.strftime("%Y-%m-%d")
     date_to = (now + timedelta(days=3)).strftime("%Y-%m-%d")
 
-    st.info(f"Fetching upcoming matches ({date_from} to {date_to})...")
-
+    # Fetch match list
     try:
         matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
         if not matches:
-            st.warning("No scheduled matches found for the selected timeframe.")
+            st.warning("No scheduled matches found for the upcoming 3 days.")
         else:
-            st.success(f"Retrieved {len(matches)} match(es) safely under rate limits.")
-            
-            for m in matches[:10]:
+            # Build match lookup dictionary
+            match_options = {}
+            for m in matches:
                 utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
                 local_date = utc_date.astimezone(user_tz)
+                label = f"{m['homeTeam']['name']} vs {m['awayTeam']['name']} ({m['competition']['name']} - {local_date.strftime('%b %d, %H:%M')})"
                 
-                match_info = {
+                match_options[label] = {
                     "league": m["competition"]["name"],
                     "home": m["homeTeam"]["name"],
                     "away": m["awayTeam"]["name"],
                     "time": local_date.strftime("%Y-%m-%d %H:%M %Z")
                 }
+
+            # Dropdown selector
+            selected_label = st.selectbox("Select a Match to Analyze:", list(match_options.keys()))
+            
+            if st.button("Analyze Selected Match", type="primary"):
+                selected_match = match_options[selected_label]
                 
-                st.subheader(f"⚽ {match_info['home']} vs {match_info['away']} — {match_info['league']} ({match_info['time']})")
+                st.subheader(f"⚽ {selected_match['home']} vs {selected_match['away']}")
+                st.caption(f"{selected_match['league']} | {selected_match['time']}")
                 
+                # Calculate Poisson model
                 probs = calculate_poisson_probs(1.60, 1.15)
                 
                 cols = st.columns(len(probs))
                 for col, (k, v) in zip(cols, probs.items()):
                     col.metric(k, f"{v*100:.1f}%")
                     
-                with st.spinner("Generating Gemini AI Signal Evaluation..."):
-                    ai_eval = evaluate_with_gemini(gemini_key, match_info, probs)
+                st.divider()
+                
+                # Single Gemini AI Call
+                with st.spinner("Generating AI Analysis..."):
+                    ai_eval = evaluate_with_gemini(gemini_key, selected_match, probs)
                     st.markdown("### 🤖 Gemini AI Signal Evaluation")
                     st.markdown(ai_eval)
-                    st.divider()
 
     except requests.exceptions.HTTPError as err:
         st.error(f"API Error: {err}")
     except Exception as e:
         st.error(f"Error executing application: {e}")
+else:
+    st.info("Please enter your API keys above to load matches.")
