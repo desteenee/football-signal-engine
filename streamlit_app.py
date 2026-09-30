@@ -62,20 +62,28 @@ def evaluate_with_gemini(gemini_key, match_data, probs):
     Do NOT invent any statistics.
     """
     
-    # Iterate through potential model identifiers supported by the API
-    model_candidates = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest", "gemini-1.5-flash"]
-    last_exception = None
-
-    for m_name in model_candidates:
+    # Preferred models to test in order
+    target_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-1.5-pro"]
+    
+    for m in target_models:
         try:
-            model = genai.GenerativeModel(m_name)
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            last_exception = e
+            model = genai.GenerativeModel(m)
+            res = model.generate_content(prompt)
+            return res.text
+        except Exception:
             continue
 
-    raise last_exception
+    # Fallback: Query available text models for the configured API key
+    available_models = [
+        m.name for m in genai.list_models() 
+        if "generateContent" in m.supported_generation_methods
+    ]
+    if available_models:
+        model = genai.GenerativeModel(available_models[0])
+        res = model.generate_content(prompt)
+        return res.text
+
+    raise RuntimeError("No available Gemini model found for this API Key.")
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
