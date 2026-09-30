@@ -45,7 +45,7 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     """Sends calculated statistics and outcome probabilities to Gemini for review."""
     genai.configure(api_key=gemini_key)
     
-    watchlist_note = "NOTE: This match is outside the primary 12-hour active window and is currently on the WATCHLIST." if is_watchlist else ""
+    watchlist_note = "NOTE: This match is outside the primary active window and is currently on the WATCHLIST." if is_watchlist else ""
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
@@ -65,7 +65,6 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     Do NOT invent any statistics.
     """
     
-    # Try models compatible with google.generativeai SDK
     models_to_try = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-1.5-pro"]
     for m in models_to_try:
         try:
@@ -75,7 +74,6 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
         except Exception:
             continue
             
-    # Fallback to dynamic model lookup
     for m in genai.list_models():
         if "generateContent" in m.supported_generation_methods:
             model = genai.GenerativeModel(m.name)
@@ -107,6 +105,7 @@ if go:
 
     now = datetime.now(user_tz)
     date_str = now.strftime("%Y-%m-%d")
+    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
     st.info(f"Fetching fixtures for today ({date_str})...")
 
@@ -115,6 +114,14 @@ if go:
         res, remaining = api_get(api_key, "/fixtures", {"date": date_str})
         st.sidebar.metric("API Requests Remaining Today", remaining)
         fixtures = res.get("response", [])
+        
+        # Look ahead to tomorrow if no fixtures remain for today
+        if not fixtures:
+            st.info(f"No remaining fixtures found for today. Checking tomorrow ({tomorrow_str})...")
+            res_tomorrow, remaining = api_get(api_key, "/fixtures", {"date": tomorrow_str})
+            st.sidebar.metric("API Requests Remaining Today", remaining)
+            fixtures = res_tomorrow.get("response", [])
+            
     except Exception as e:
         st.error(f"Error fetching data from API-Football: {e}")
 
@@ -128,18 +135,17 @@ if go:
             "league": f["league"]["name"],
             "home": f["teams"]["home"]["name"],
             "away": f["teams"]["away"]["name"],
-            "time": f_date.strftime("%H:%M %Z"),
+            "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
             "date_obj": f_date
         }
         
-        # Check if match is in active 12-hour window
         if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
             upcoming_matches.append(match_info)
-        elif f_date > now + timedelta(hours=WINDOW_HOURS):
+        elif f_date > now:
             watchlist_matches.append(match_info)
 
     if upcoming_matches:
-        st.success(f"Found {len(upcoming_matches)} live/upcoming match(es) in the next {WINDOW_HOURS} hours.")
+        st.success(f"Found {len(upcoming_matches)} match(es) starting in the next {WINDOW_HOURS} hours.")
         for match in upcoming_matches:
             st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
             
@@ -156,26 +162,22 @@ if go:
                 st.markdown(ai_eval)
                 st.divider()
 
+    elif watchlist_matches:
+        st.info("📋 **Watchlist Matches**: Displaying upcoming scheduled fixtures outside the immediate active window.")
+        for match in watchlist_matches:
+            st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
+            
+            home_xg, away_xg = 1.50, 1.10
+            probs = calculate_poisson_probs(home_xg, away_xg)
+            
+            cols = st.columns(len(probs))
+            for col, (k, v) in zip(cols, probs.items()):
+                col.metric(k, f"{v*100:.1f}%")
+                
+            with st.spinner("Generating Gemini Watchlist Analysis..."):
+                ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=True)
+                st.markdown("### 🤖 Gemini AI Watchlist Evaluation")
+                st.markdown(ai_eval)
+                st.divider()
     else:
-        st.warning(f"No matches starting within the immediate {WINDOW_HOURS}-hour window.")
-        
-        if watchlist_matches:
-            st.info("📋 **Watchlist Matches (Later Today)**: Displaying scheduled fixtures outside the threshold window for pre-match analysis.")
-            for match in watchlist_matches:
-                st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
-                
-                # Estimated default xG for model testing
-                home_xg, away_xg = 1.50, 1.10
-                probs = calculate_poisson_probs(home_xg, away_xg)
-                
-                cols = st.columns(len(probs))
-                for col, (k, v) in zip(cols, probs.items()):
-                    col.metric(k, f"{v*100:.1f}%")
-                    
-                with st.spinner("Generating Gemini Watchlist Analysis..."):
-                    ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=True)
-                    st.markdown("### 🤖 Gemini AI Watchlist Evaluation")
-                    st.markdown(ai_eval)
-                    st.divider()
-        else:
-            st.error("No upcoming matches remaining on today's schedule.")
+        st.error("No upcoming matches remaining for today or tomorrow on your API subscription.")
