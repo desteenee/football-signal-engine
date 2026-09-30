@@ -1,25 +1,48 @@
 import streamlit as st
 import requests
-import pandas as pd
+import time
 import numpy as np
 from scipy.stats import poisson
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import google.generativeai as genai
 
-# Explicitly pointed to Football-only domain
-BASE = "https://v3.football.api-sports.io"
-WINDOW_HOURS = 12
+BASE_URL = "https://api.football-data.org/v4"
 
 st.set_page_config(page_title="Football Signal Engine", page_icon="⚽", layout="wide")
 
-# ---------- Helper Functions ----------
-def api_get(key, path, params=None):
-    r = requests.get(f"{BASE}{path}", headers={"x-apisports-key": key}, params=params or {}, timeout=30)
-    r.raise_for_status()
-    remaining = r.headers.get("x-ratelimit-requests-remaining")
-    return r.json(), remaining
+# ---------- Rate-Limited API Client ----------
+def fetch_fd_fixtures_throttled(api_key, date_from, date_to):
+    """
+    Fetches scheduled matches while monitoring API response headers 
+    to automatically prevent rate-limit bans (HTTP 429).
+    """
+    headers = {"X-Auth-Token": api_key}
+    url = f"{BASE_URL}/matches?dateFrom={date_from}&dateTo={date_to}"
+    
+    response = requests.get(url, headers=headers, timeout=15)
+    
+    # Check headers for remaining requests allowance
+    requests_remaining = response.headers.get("X-Requests-Available-Minute")
+    seconds_to_reset = response.headers.get("X-RequestCounter-Reset")
+    
+    # Handle rate-limit threshold pre-emptively
+    if requests_remaining is not None and int(requests_remaining) <= 1:
+        wait_time = int(seconds_to_reset) if seconds_to_reset else 60
+        st.warning(f"Rate limit threshold reached. Pausing for {wait_time} seconds to protect account status...")
+        time.sleep(wait_time)
+        
+    # Handle explicit 429 rate limit response if hit
+    if response.status_code == 429:
+        retry_after = int(response.headers.get("Retry-After", 60))
+        st.error(f"Rate limited (HTTP 429). Waiting {retry_after} seconds before retry...")
+        time.sleep(retry_after)
+        response = requests.get(url, headers=headers, timeout=15)
 
+    response.raise_for_status()
+    return response.json().get("matches", [])
+
+# ---------- Core Analytics Logic ----------
 def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
     matrix = np.zeros((max_goals, max_goals))
     for h in range(max_goals):
@@ -29,7 +52,6 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
     p_home = float(np.sum(np.tril(matrix, -1)))
     p_draw = float(np.sum(np.diag(matrix)))
     p_away = float(np.sum(np.triu(matrix, 1)))
-    
     p_o25 = float(np.sum([matrix[h, a] for h in range(max_goals) for a in range(max_goals) if h + a > 2.5]))
     p_u25 = 1.0 - p_o25
     
@@ -41,16 +63,14 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
         "Under 2.5 Goals": p_u25,
     }
 
-def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
+def evaluate_with_gemini(gemini_key, match_data, probs):
     genai.configure(api_key=gemini_key)
-    watchlist_note = "NOTE: This match is currently on the WATCHLIST." if is_watchlist else ""
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
     Match: {match_data['home']} vs {match_data['away']}
     League: {match_data['league']}
     Match Time: {match_data['time']}
-    {watchlist_note}
     
     Model Calculated Outcome Probabilities (Poisson):
     {probs}
@@ -80,19 +100,19 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
 
     raise RuntimeError("Could not find an accessible Gemini model.")
 
-# ---------- UI Layout ----------
+# ---------- Interface ----------
 st.title("⚽ Football Signal Engine")
-st.caption("Live Football Fixtures, Poisson Probability Modeling & Gemini AI Synthesis")
+st.caption("Powered by Football-Data.org & Gemini AI Synthesis")
 
 col_api, col_gem, col_tz = st.columns([3, 3, 2])
 with col_api:
-    api_key = st.text_input("API-Football Key", type="password")
+    fd_key = st.text_input("Football-Data.org API Key", value="5279f39beb64424cbbfc4f94e8e48159", type="password")
 with col_gem:
     gemini_key = st.text_input("Gemini API Key", type="password")
 with col_tz:
     tz_name = st.text_input("Time Zone", value="Africa/Lagos")
 
-go = st.button("Refresh & Calculate Signals", type="primary", disabled=not (api_key and gemini_key))
+go = st.button("Refresh & Calculate Signals", type="primary", disabled=not (fd_key and gemini_key))
 
 if go:
     try:
@@ -102,78 +122,45 @@ if go:
         user_tz = ZoneInfo("UTC")
 
     now = datetime.now(user_tz)
-    st.info("Fetching all active live and upcoming football fixtures...")
+    date_from = now.strftime("%Y-%m-%d")
+    date_to = (now + timedelta(days=3)).strftime("%Y-%m-%d")
 
-    fixtures = []
+    st.info(f"Fetching upcoming matches ({date_from} to {date_to})...")
+
     try:
-        # Fetch directly from live football endpoint to bypass season restrictions
-        res, remaining = api_get(api_key, "/fixtures", {"live": "all"})
-        st.sidebar.metric("API Requests Remaining Today", remaining)
-        fixtures = res.get("response", [])
+        matches = fetch_fd_fixtures_throttled(fd_key, date_from, date_to)
         
-        # Fallback to next 50 upcoming scheduled football matches if no live matches currently
-        if not fixtures:
-            res_next, remaining = api_get(api_key, "/fixtures", {"next": "50"})
-            st.sidebar.metric("API Requests Remaining Today", remaining)
-            fixtures = res_next.get("response", [])
+        if not matches:
+            st.warning("No scheduled matches found for the selected timeframe.")
+        else:
+            st.success(f"Retrieved {len(matches)} match(es) safely under rate limits.")
+            
+            for m in matches[:10]:
+                utc_date = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+                local_date = utc_date.astimezone(user_tz)
+                
+                match_info = {
+                    "league": m["competition"]["name"],
+                    "home": m["homeTeam"]["name"],
+                    "away": m["awayTeam"]["name"],
+                    "time": local_date.strftime("%Y-%m-%d %H:%M %Z")
+                }
+                
+                st.subheader(f"⚽ {match_info['home']} vs {match_info['away']} — {match_info['league']} ({match_info['time']})")
+                
+                probs = calculate_poisson_probs(1.60, 1.15)
+                
+                cols = st.columns(len(probs))
+                for col, (k, v) in zip(cols, probs.items()):
+                    col.metric(k, f"{v*100:.1f}%")
+                    
+                with st.spinner("Generating Gemini AI Signal Evaluation..."):
+                    ai_eval = evaluate_with_gemini(gemini_key, match_info, probs)
+                    st.markdown("### 🤖 Gemini AI Signal Evaluation")
+                    st.markdown(ai_eval)
+                    st.divider()
 
+    except requests.exceptions.HTTPError as err:
+        st.error(f"API Error: {err}")
     except Exception as e:
-        st.error(f"Error fetching football data: {e}")
-
-    upcoming_matches = []
-    watchlist_matches = []
-
-    for f in fixtures:
-        f_date = datetime.fromisoformat(f["fixture"]["date"]).astimezone(user_tz)
-        match_info = {
-            "id": f["fixture"]["id"],
-            "league": f["league"]["name"],
-            "home": f["teams"]["home"]["name"],
-            "away": f["teams"]["away"]["name"],
-            "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
-            "status": f["fixture"]["status"]["short"],
-            "date_obj": f_date
-        }
-        
-        if match_info["status"] in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
-            upcoming_matches.append(match_info)
-        elif f_date > now:
-            watchlist_matches.append(match_info)
-
-    if upcoming_matches:
-        st.success(f"Found {len(upcoming_matches)} live football match(es) in progress.")
-        for match in upcoming_matches:
-            st.subheader(f"🔴 LIVE: {match['home']} vs {match['away']} — {match['league']} ({match['status']})")
-            
-            home_xg, away_xg = 1.65, 1.20
-            probs = calculate_poisson_probs(home_xg, away_xg)
-            
-            cols = st.columns(len(probs))
-            for col, (k, v) in zip(cols, probs.items()):
-                col.metric(k, f"{v*100:.1f}%")
-                
-            with st.spinner("Generating Gemini AI Signal Evaluation..."):
-                ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=False)
-                st.markdown("### 🤖 Gemini AI Signal Evaluation")
-                st.markdown(ai_eval)
-                st.divider()
-
-    elif watchlist_matches:
-        st.info(f"📋 **Watchlist Matches**: Displaying {len(watchlist_matches)} next scheduled football fixtures.")
-        for match in watchlist_matches[:10]:  # Display top 10 upcoming matches
-            st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
-            
-            home_xg, away_xg = 1.50, 1.10
-            probs = calculate_poisson_probs(home_xg, away_xg)
-            
-            cols = st.columns(len(probs))
-            for col, (k, v) in zip(cols, probs.items()):
-                col.metric(k, f"{v*100:.1f}%")
-                
-            with st.spinner("Generating Gemini Watchlist Analysis..."):
-                ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=True)
-                st.markdown("### 🤖 Gemini AI Watchlist Evaluation")
-                st.markdown(ai_eval)
-                st.divider()
-    else:
-        st.error("No active or scheduled football fixtures found on your API plan.")
+        st.error(f"Error executing application: {e}")
