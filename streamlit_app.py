@@ -3,23 +3,13 @@ import requests
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import google.generativeai as genai
 
+# Explicitly pointed to Football-only domain
 BASE = "https://v3.football.api-sports.io"
 WINDOW_HOURS = 12
-
-# Major League IDs to query
-TARGET_LEAGUES = [
-    39,   # Premier League
-    140,  # La Liga
-    135,  # Serie A
-    78,   # Bundesliga
-    61,   # Ligue 1
-    2,    # UEFA Champions League
-    3     # UEFA Europa League
-]
 
 st.set_page_config(page_title="Football Signal Engine", page_icon="⚽", layout="wide")
 
@@ -31,7 +21,6 @@ def api_get(key, path, params=None):
     return r.json(), remaining
 
 def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
-    """Generates outcome probabilities based on Poisson distribution."""
     matrix = np.zeros((max_goals, max_goals))
     for h in range(max_goals):
         for a in range(max_goals):
@@ -53,10 +42,8 @@ def calculate_poisson_probs(home_xg, away_xg, max_goals=6):
     }
 
 def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
-    """Sends calculated statistics and outcome probabilities to Gemini for review."""
     genai.configure(api_key=gemini_key)
-    
-    watchlist_note = "NOTE: This match is outside the primary active window and is currently on the WATCHLIST." if is_watchlist else ""
+    watchlist_note = "NOTE: This match is currently on the WATCHLIST." if is_watchlist else ""
     
     prompt = f"""
     You are an expert sports quantitative analyst. Review the statistical model output for the following football match:
@@ -72,7 +59,7 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
     Provide a concise evaluation (3 key bullet points max) explaining:
     1. The strongest statistical signal based on expected goals.
     2. Tactical context or market risk to consider.
-    3. Final quantitative verdict and recommendation (e.g., monitor on watchlist vs. immediate action).
+    3. Final quantitative verdict and recommendation.
     Do NOT invent any statistics.
     """
     
@@ -95,7 +82,7 @@ def evaluate_with_gemini(gemini_key, match_data, probs, is_watchlist=False):
 
 # ---------- UI Layout ----------
 st.title("⚽ Football Signal Engine")
-st.caption("Live Match Fetching, Poisson Probability Modeling & Gemini AI Synthesis")
+st.caption("Live Football Fixtures, Poisson Probability Modeling & Gemini AI Synthesis")
 
 col_api, col_gem, col_tz = st.columns([3, 3, 2])
 with col_api:
@@ -115,53 +102,48 @@ if go:
         user_tz = ZoneInfo("UTC")
 
     now = datetime.now(user_tz)
-    
-    # Check current date and next 2 days
-    dates_to_check = [
-        (now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)
-    ]
+    st.info("Fetching all active live and upcoming football fixtures...")
 
     fixtures = []
-    st.info(f"Scanning target leagues over the next 3 days ({dates_to_check[0]} to {dates_to_check[-1]})...")
-
     try:
-        for d in dates_to_check:
-            for league_id in TARGET_LEAGUES:
-                res, remaining = api_get(api_key, "/fixtures", {"date": d, "league": league_id})
-                st.sidebar.metric("API Requests Remaining Today", remaining)
-                league_fixtures = res.get("response", [])
-                if league_fixtures:
-                    fixtures.extend(league_fixtures)
-                    
+        # Fetch directly from live football endpoint to bypass season restrictions
+        res, remaining = api_get(api_key, "/fixtures", {"live": "all"})
+        st.sidebar.metric("API Requests Remaining Today", remaining)
+        fixtures = res.get("response", [])
+        
+        # Fallback to next 50 upcoming scheduled football matches if no live matches currently
+        if not fixtures:
+            res_next, remaining = api_get(api_key, "/fixtures", {"next": "50"})
+            st.sidebar.metric("API Requests Remaining Today", remaining)
+            fixtures = res_next.get("response", [])
+
     except Exception as e:
-        st.error(f"Error fetching data from API-Football: {e}")
+        st.error(f"Error fetching football data: {e}")
 
     upcoming_matches = []
     watchlist_matches = []
 
     for f in fixtures:
         f_date = datetime.fromisoformat(f["fixture"]["date"]).astimezone(user_tz)
+        match_info = {
+            "id": f["fixture"]["id"],
+            "league": f["league"]["name"],
+            "home": f["teams"]["home"]["name"],
+            "away": f["teams"]["away"]["name"],
+            "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
+            "status": f["fixture"]["status"]["short"],
+            "date_obj": f_date
+        }
         
-        # Only include matches that haven't finished or started yet
-        if f_date > now:
-            match_info = {
-                "id": f["fixture"]["id"],
-                "league": f["league"]["name"],
-                "home": f["teams"]["home"]["name"],
-                "away": f["teams"]["away"]["name"],
-                "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
-                "date_obj": f_date
-            }
-            
-            if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
-                upcoming_matches.append(match_info)
-            else:
-                watchlist_matches.append(match_info)
+        if match_info["status"] in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
+            upcoming_matches.append(match_info)
+        elif f_date > now:
+            watchlist_matches.append(match_info)
 
     if upcoming_matches:
-        st.success(f"Found {len(upcoming_matches)} match(es) starting in the next {WINDOW_HOURS} hours.")
+        st.success(f"Found {len(upcoming_matches)} live football match(es) in progress.")
         for match in upcoming_matches:
-            st.subheader(f"⚽ {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
+            st.subheader(f"🔴 LIVE: {match['home']} vs {match['away']} — {match['league']} ({match['status']})")
             
             home_xg, away_xg = 1.65, 1.20
             probs = calculate_poisson_probs(home_xg, away_xg)
@@ -170,15 +152,15 @@ if go:
             for col, (k, v) in zip(cols, probs.items()):
                 col.metric(k, f"{v*100:.1f}%")
                 
-            with st.spinner("Generating Gemini AI Analysis..."):
+            with st.spinner("Generating Gemini AI Signal Evaluation..."):
                 ai_eval = evaluate_with_gemini(gemini_key, match, probs, is_watchlist=False)
                 st.markdown("### 🤖 Gemini AI Signal Evaluation")
                 st.markdown(ai_eval)
                 st.divider()
 
     elif watchlist_matches:
-        st.info(f"📋 **Watchlist Matches**: Found {len(watchlist_matches)} upcoming scheduled fixture(s) across target leagues.")
-        for match in watchlist_matches:
+        st.info(f"📋 **Watchlist Matches**: Displaying {len(watchlist_matches)} next scheduled football fixtures.")
+        for match in watchlist_matches[:10]:  # Display top 10 upcoming matches
             st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
             
             home_xg, away_xg = 1.50, 1.10
@@ -194,4 +176,4 @@ if go:
                 st.markdown(ai_eval)
                 st.divider()
     else:
-        st.error("No upcoming matches found across target leagues for the next 3 days. Try expanding league IDs or date range.")
+        st.error("No active or scheduled football fixtures found on your API plan.")
