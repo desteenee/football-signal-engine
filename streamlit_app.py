@@ -10,6 +10,17 @@ import google.generativeai as genai
 BASE = "https://v3.football.api-sports.io"
 WINDOW_HOURS = 12
 
+# Major League IDs to query
+TARGET_LEAGUES = [
+    39,   # Premier League
+    140,  # La Liga
+    135,  # Serie A
+    78,   # Bundesliga
+    61,   # Ligue 1
+    2,    # UEFA Champions League
+    3     # UEFA Europa League
+]
+
 st.set_page_config(page_title="Football Signal Engine", page_icon="⚽", layout="wide")
 
 # ---------- Helper Functions ----------
@@ -104,24 +115,24 @@ if go:
         user_tz = ZoneInfo("UTC")
 
     now = datetime.now(user_tz)
-    date_str = now.strftime("%Y-%m-%d")
-    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    st.info(f"Fetching fixtures for today ({date_str})...")
+    
+    # Check current date and next 2 days
+    dates_to_check = [
+        (now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)
+    ]
 
     fixtures = []
+    st.info(f"Scanning target leagues over the next 3 days ({dates_to_check[0]} to {dates_to_check[-1]})...")
+
     try:
-        res, remaining = api_get(api_key, "/fixtures", {"date": date_str})
-        st.sidebar.metric("API Requests Remaining Today", remaining)
-        fixtures = res.get("response", [])
-        
-        # Look ahead to tomorrow if no fixtures remain for today
-        if not fixtures:
-            st.info(f"No remaining fixtures found for today. Checking tomorrow ({tomorrow_str})...")
-            res_tomorrow, remaining = api_get(api_key, "/fixtures", {"date": tomorrow_str})
-            st.sidebar.metric("API Requests Remaining Today", remaining)
-            fixtures = res_tomorrow.get("response", [])
-            
+        for d in dates_to_check:
+            for league_id in TARGET_LEAGUES:
+                res, remaining = api_get(api_key, "/fixtures", {"date": d, "league": league_id})
+                st.sidebar.metric("API Requests Remaining Today", remaining)
+                league_fixtures = res.get("response", [])
+                if league_fixtures:
+                    fixtures.extend(league_fixtures)
+                    
     except Exception as e:
         st.error(f"Error fetching data from API-Football: {e}")
 
@@ -130,19 +141,22 @@ if go:
 
     for f in fixtures:
         f_date = datetime.fromisoformat(f["fixture"]["date"]).astimezone(user_tz)
-        match_info = {
-            "id": f["fixture"]["id"],
-            "league": f["league"]["name"],
-            "home": f["teams"]["home"]["name"],
-            "away": f["teams"]["away"]["name"],
-            "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
-            "date_obj": f_date
-        }
         
-        if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
-            upcoming_matches.append(match_info)
-        elif f_date > now:
-            watchlist_matches.append(match_info)
+        # Only include matches that haven't finished or started yet
+        if f_date > now:
+            match_info = {
+                "id": f["fixture"]["id"],
+                "league": f["league"]["name"],
+                "home": f["teams"]["home"]["name"],
+                "away": f["teams"]["away"]["name"],
+                "time": f_date.strftime("%Y-%m-%d %H:%M %Z"),
+                "date_obj": f_date
+            }
+            
+            if now <= f_date <= now + timedelta(hours=WINDOW_HOURS):
+                upcoming_matches.append(match_info)
+            else:
+                watchlist_matches.append(match_info)
 
     if upcoming_matches:
         st.success(f"Found {len(upcoming_matches)} match(es) starting in the next {WINDOW_HOURS} hours.")
@@ -163,7 +177,7 @@ if go:
                 st.divider()
 
     elif watchlist_matches:
-        st.info("📋 **Watchlist Matches**: Displaying upcoming scheduled fixtures outside the immediate active window.")
+        st.info(f"📋 **Watchlist Matches**: Found {len(watchlist_matches)} upcoming scheduled fixture(s) across target leagues.")
         for match in watchlist_matches:
             st.subheader(f"⏳ [WATCHLIST] {match['home']} vs {match['away']} — {match['league']} ({match['time']})")
             
@@ -180,4 +194,4 @@ if go:
                 st.markdown(ai_eval)
                 st.divider()
     else:
-        st.error("No upcoming matches remaining for today or tomorrow on your API subscription.")
+        st.error("No upcoming matches found across target leagues for the next 3 days. Try expanding league IDs or date range.")
